@@ -1,0 +1,897 @@
+---
+title: "Life Expectancy Across Nations"
+subtitle: "Regression Analysis"
+author: "Dressed to the 9's"
+date: "November 20, 2019"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE, 
+                      message = FALSE, 
+                      warning = FALSE)
+```
+
+### Load Packages 
+
+```{r load-packages, message=FALSE}
+library(tidyverse)
+library(skimr)
+library(gridExtra)
+library(broom)
+library(knitr)
+library(pairwiseCI)
+library(nnet)
+library(leaps)
+```
+
+```{r data}
+lifedata <- read_csv("data /life.csv")
+
+
+lifedata <- lifedata%>%
+  filter(year == 2014)
+
+```
+
+
+### Research Question and Modeling Objective
+
+We intend to use this data in order to discover the differences in life expectancies across countries. Life expectancy is reported in the data as the average age for each country. Therefore, countries can use this information to determine what is most important for them to focus on improving in order to improve overall life expectancy.  
+Our aim is to investigate which country characteristics are the best predictors of life expectancy in a given country in the year 2014. First, we will create a new categorical variable to classify life expectancy: 48 years to 60 years will be considered poor, 61 years to 67 years will be considered fair, 68 years to 76 years will be considered good, and 77 years to 90 years will be considered excellent. These thresholds are chosen based on the distribution of life expectancy: the minimum to 25th percentile is 48.1 years to 65.6 years, informing our choice of 48 year to 60 years for poor.  The 25th to 75th percentile is 65.6 to 76.5, informing our choice of 61 years to 67 years for fair and 68 years to 76 years for good. Finally, the 75th percentile to maximum is 76.85 years to 89 years, informing our choice of 77 years to 90 years for excellent.
+
+We will use a multinomial logistic regression model to explore the effects of each country characteristic on the probability that the given country will have a certain category of life expectancy in 2014.
+We expect that predictors involving data on a nation’s immunizations (predictor variables Hepatitis B, HIV/AIDS, Polio, Diphtheria, and Measles) will be more significant predictors of life expectancy for the year 2014, rather than predictors involving mortality factors, economic factors, and other health-related factors, because these predictors relate directly to the burden of infectious diseases.  
+However, there may be a difference between the significance of immunizations in developing countries versus developed countries where most of the population is already vaccinated. We expect that in developing countries, where there is a high burden of disease due to infectious diseases, immunizations will be more significant predictors of life expectancy than in developed countries, where the burden of disease is concentrated in non-communicable diseases rather than infectious diseases. To investigate this, we intend to explore the potential relationship between the life expectancies of countries classified as "developed" versus countries classified as "developing" using ANOVA, and we expect to find a significant difference between these two groups. 
+
+### Response Variable
+
+The response variable is the life expectancy of a country in years of age. Its variable type is double.
+
+```{r response_plot}
+ggplot(data = lifedata, mapping = aes(x = life_expectancy))+
+  geom_histogram(binwidth = 5)+
+  labs(title = "Distribution of Life Expectancy", x = "life expectancy (in years)")
+```
+
+This variable is unimodal and centered approximtely around 75 years.
+
+We are going to create a new categorical variable to classify life expectancy in which: 48 years to 60 years will be considered poor, 61 years to 67 years will be considered fair, 68 years to 76 years will be considered good, and 77 years to 90 years will be considered excellent.
+
+```{r categories}
+lifedata <- lifedata %>%
+  mutate(life_expectancy_cat = (case_when(
+      life_expectancy <= 60 ~ "poor",
+      life_expectancy > 60 & life_expectancy <= 67 ~ "fair",
+      life_expectancy > 67 & life_expectancy <= 76 ~ "good",
+      life_expectancy > 76 ~ "excellent"
+  ))) %>%
+  mutate(life_expectancy_cat = fct_relevel(life_expectancy_cat, c("excellent", "good", "fair", "poor")))
+
+skim(lifedata$life_expectancy_cat)
+```
+
+This new variable life_expectancy_cat will be used as the response variable for our model. This variable is a categorical variable with 4 different levels.
+
+```{r plot-new-response}
+ggplot(data = lifedata, mapping = aes(x = life_expectancy_cat))+
+  geom_bar()+
+  labs(title = "Distribution of Life Expectancy", x = "Categories")
+```
+
+From the plot, we can see that most countries have life expectancies categorized as good.
+
+### Updated Exploratory Data Analysis
+
+##### Overall Description of Data
+
+The health-related data in this dataset was collected by the Global Health Observatory (GHO) data repository under World Health Organization (WHO). The economic data for each country was first reported on the United Nations website.
+
+Before the merged dataset was reported on Kaggle, a few countries (such as Vanuatu, Tonga, Togo, and Cabo Verde) were removed because these observations were missing data for most of the variables.
+
+While the Kaggle dataset included individual observations for each country for each year from 2000-2015, we will only explore the data for the year 2014 in order to narrow the focus and scope of our analysis.
+
+Therefore, our final dataset will include 183 observations and 22 columns. Each observation represents a different world country for the year 2014.
+
+````{r skim}
+lifedata%>%
+  skim()
+```
+
+As seen in the summary statistics, there are 183 observations and 22 variables. While some variables have some missing data, every country has a value for life expectancy, of which the average is 71.54 years.
+
+##### Univariate Distributions of Predictor Variables 
+
+We can first examine the status variable which indicates if a country is developed or developing:
+
+```{r status}
+ggplot(lifedata, aes(x = status))+
+  geom_bar()+
+  labs(title = "Count of Developed and Developing", x = "Status")
+
+lifedata%>%
+  count(status)
+```
+
+As seen in the bar graph above, there are many more developing countries than developed (151 vs. 32).
+
+
+We would also like to examine immunization coverage for Hepatitis B, Polio, and Diphtheria. This is reported in terms of percent of 1-year-olds who are immunized.
+
+```{r immunization_percent, warning=FALSE}
+p1 <- ggplot(lifedata, aes(x = hepatitis_b))+
+  geom_histogram(binwidth = 5)+
+  labs(x = "Hepatitis B")
+
+p2 <- ggplot(lifedata, aes(x = polio))+
+  geom_histogram(binwidth = 5)+
+  labs(x = "Polio")
+
+p3 <- ggplot(lifedata, aes(x = diphtheria))+
+  geom_histogram(binwidth = 5)+
+  labs(x = "Diphtheria")
+
+grid.arrange(p1, p2, p3, top = "Distributions of Immunization Coverage (%) ")
+```
+
+From these histograms it is evident that in most countries, most 1-year-olds are immunized for these diseases. However, for all the diseases there are still a few countries with almost a 0% immunization coverage, which likely affects life expectancy.
+
+We would like to investigate the two variables indicating prevalence of thinness among children and adolescents in terms of a percent: thinness_5_9 and thinness_10-19.
+
+```{r thinness}
+p1 <- ggplot(lifedata, aes(x = thinness_5_9))+
+  geom_histogram(binwidth = 1)+
+  labs(title = "Thinness Among Ages 5-9", x = "% of Children who are Thin")
+
+p2 <- ggplot(lifedata, aes(x = thinness_10_19))+
+  geom_histogram(binwidth = 1)+
+  labs(title = "Thinness Among Ages 10-19", x = "% of Children who are Thin")
+
+grid.arrange(p1, p2)
+```
+
+Both of these distributions are right-skewed and are overall very similar. Most countries in the dataset have a low percent of children of either age group who are considered to be thin.
+
+```{r alcohol}
+ggplot(lifedata, aes(x = alcohol))+
+  geom_histogram(binwidth = 1)+
+  labs(title = "Per Capital Consumption of Alcohol",
+       x = "litres of pure alcohol")
+
+
+lifedata%>%
+  select(country, alcohol)%>%
+  arrange(alcohol)%>%
+  slice(1:5)
+
+alcoholdata <- lifedata%>%
+  filter(alcohol > 0.01)
+
+ggplot(alcoholdata, aes(x = alcohol))+
+  geom_histogram(binwidth = 2)+
+  labs(title = "Per Capital Consumption of Alcohol", subtitle = "If > 0.01",
+       x = "litres of pure alcohol")
+```
+
+Although many countries have a per capita consumption of 0.01 litres of pure alcohol, those countries greater than 0.01 create a unimodal, more symmetric distribution.
+
+
+```{r bmi}
+ggplot(lifedata, aes(x = bmi))+
+  geom_histogram(binwidth = 5)+
+  labs(title = "Average BMI")
+```
+
+This distribution is unusual and does not follow the distributions for the thinness-related variables. There seems to be three peaks, around 5, 25, and 60 BMI. This may be because there are countries in which people are malnourished and starving, countries in which people are healthy on average, and countries in which most people are overweight.
+
+```{r schooling}
+ggplot(lifedata, aes(x = schooling))+
+  geom_histogram(binwidth = 1)+
+  labs(title = "Number of Years of Schooling")
+
+lifedata%>%
+  filter(schooling != is.na(schooling))%>%
+  summarize(mean = mean(schooling))
+```
+
+Schooling is unimodal, centered at 12.88728	years.
+
+
+```{r measles}
+ggplot(data = lifedata, mapping = aes(x = measles))+
+  geom_histogram()+
+  labs(title = "Cases of Measles per 1000 Population")
+```
+
+This distribution and the summary statistics show that this variable is extremely right-skewed. Since 80,000 cases of measles per 1000 population is nonlogical, we are concerned about the accuracy of this variable's values and will not include it in the model.
+
+
+Next, we will compare the distributions of infant_deaths and under_five_deaths, which one would expect to be quite similar to each other:
+
+```{r child_death}
+p1 <- ggplot(lifedata, aes(x = infant_deaths))+
+  geom_histogram()
+
+p2 <- ggplot(lifedata, aes(x = under_five_deaths))+
+  geom_histogram()
+
+grid.arrange(p1, p2, top = "Number of Deaths per 1000 Population")
+
+lifedata%>%
+  select(country, infant_deaths, under_five_deaths)%>%
+  arrange(-under_five_deaths)%>%
+  slice(1:5)
+```
+
+Both of these distributions are highly right-skewed and similar to each other. We are also concerned about the accuracy of these data because the values are as high as 1200 deaths under age five per 1000 population. Therefore, we will not include these in our model.
+
+
+```{r expenditure}
+p1 <- ggplot(lifedata, aes(x = total_expenditure))+
+  geom_histogram()+
+  labs(x = "percent", subtitle = "as a % of total government expenditure")
+
+p2 <- ggplot(lifedata, aes(x = perc_expenditure))+
+  geom_histogram()+
+  labs(x = "percent", subtitle = "as a % of GDP per capita")
+
+grid.arrange(p1, p2, top = "Expenditure on Health")
+```
+
+Because total_expenditure has a more symmetric distribution and gives a better understanding of the spending of health by country, we will include only total_expenditure in our model.
+
+
+```{r gdp}
+ggplot(lifedata, aes(x = gdp))+
+  geom_histogram()+
+  labs(title = "Distribution of GDP", x = "GDP per capita (in USD)")
+```
+
+The distribution of GDP is very right-skewed, possibly because there are a few very wealthy countries that are outliers.
+
+```{r hiv_aids}
+ggplot(lifedata, aes(x = hiv_aids))+
+  geom_histogram()+
+  labs(title = "Distribution of HIV/AIDS", 
+       x = "Deaths per 1000 live births HIV/AIDS (0-4 years)")
+```
+
+Death from HIV/AIDS is such a rare event that this distribution is very right-skewed. It is evident that a handful of countries have an epidemic.
+
+```{r adult_mort}
+ggplot(lifedata, aes(x = adult_mortality))+
+  geom_histogram(binwidth = 40)+
+  labs(title = "Distribution of Adult Mortality Rates", 
+       x = "age 15-60 deaths per 1000 population")
+```
+
+This distribution seems to be centered roughly around 120 deaths age 15-60 per 1000 population.
+
+##### Bivariate Relationships Between Predictors & The Response Variable 
+
+Since our response variable is now categorical, we can examine bivariate relationships between it and the predictors using stacked bar graphs for categorical predictors and boxplots for continuous numerical predictors.
+
+We will only examine those variables which seem to be accurate after the univariate analysis.
+
+```{r status_bi}
+ggplot(lifedata, aes(x = status, fill = life_expectancy_cat))+
+  geom_bar(position = "fill")+
+  labs(title = "Status vs. Life Expectancy")
+```
+
+This bar graph shows that for developed countries, life expectancy is either excellent or good while developing countries have a more full range.
+
+```{r immunization_bi}
+p1 <- ggplot(lifedata, aes(y = hepatitis_b, x = life_expectancy_cat))+
+  geom_boxplot()+
+  labs(subtitle = "Hepatitis B vs. Life Expectancy")
+
+p2 <- ggplot(lifedata, aes(y = polio, x = life_expectancy_cat))+
+  geom_boxplot()+
+  labs(subtitle = "Polio vs. Life Expectancy")
+
+p3 <- ggplot(lifedata, aes(y = diphtheria, x = life_expectancy_cat))+
+  geom_boxplot()+
+  labs(subtitle = "Diphtheria vs. Life Expectancy")
+
+grid.arrange(p1, p2, p3, top = "Immunization Coverage (%) vs. Life Expectancy")
+```
+
+Countries with all types of life expectancy are left skewed in terms of Hepatitis B immunization coverage. It appears that "excellent" and "good" countries have higher percent of 1-year-olds immunized than "fair" and "poor" countries, as one might expect.
+
+The same appears to be true for polio and diphtheria immunizations.
+
+```{r thinness_bi}
+p1 <- ggplot(lifedata, aes(y = thinness_5_9, x = life_expectancy_cat))+
+  geom_boxplot()+
+  labs(subtitle = "Thinness Ages 5-9 vs. Life Expectancy")
+
+p2 <- ggplot(lifedata, aes(y = thinness_10_19, x = life_expectancy_cat))+
+  geom_boxplot()+
+  labs(subtitle = "Thinness Ages 10-19 vs. Life Expectancy")
+
+grid.arrange(p1, p2)
+```
+
+From these plots, thinness from ages 5-9 and ages 10-19 seems to be more prevalent in countries with fair to poor life expectancy.
+
+```{r alcohol_bi}
+ggplot(lifedata, aes(y = alcohol, x = life_expectancy_cat))+
+  geom_boxplot()+
+  labs(title = "Per Capital Consumption of Alcohol vs. Life Expectancy")
+```
+
+```{r bmi_bi}
+ggplot(lifedata, aes(y = bmi, x = life_expectancy_cat))+
+  geom_boxplot()+
+  labs(title = "Average BMI vs. Life Expectancy")
+```
+
+```{r schooling_bi}
+ggplot(lifedata, aes(y = schooling, x = life_expectancy_cat))+
+  geom_boxplot()+
+  labs(title = "Schooling vs. Life Expectancy")
+```
+
+It seems that as schooling decreases, life expectancy decreases.
+
+```{r expenditure_bi}
+ggplot(lifedata, aes(x = life_expectancy_cat, y = total_expenditure))+
+  geom_boxplot()+
+  labs(y = "% of total government expenditure", 
+       title = "Total Expenditure vs. Life Expectancy")
+```
+
+```{r gdp_bi}
+ggplot(lifedata, aes(x = life_expectancy_cat, y = gdp))+
+  geom_boxplot()+
+  labs(title = "GDP vs. Life Expectancy", 
+       y = "GDP per capita (in USD)")
+```
+
+It appears that the countries with a high GDP per capita also tend to have excellent life expectancy. This makes sense because both are roughly a measure of the quality of life in a country.
+
+```{r hiv_aids_bi}
+ggplot(lifedata, aes(x = life_expectancy_cat, y = hiv_aids))+
+  geom_boxplot()+
+  labs(title = "HIV/AIDS vs. Life Expectancy", 
+       y = "Deaths per 1000 live births HIV/AIDS (0-4 years)")
+```
+
+It appears that the majority of HIV/AIDS-related deaths occur in countries with poor life expectancy.
+
+```{r adult_mort_bi}
+ggplot(lifedata, aes(x = life_expectancy_cat, y = adult_mortality))+
+  geom_boxplot()+
+  labs(title = "Adult Mortality Rates vs. Life Expectancy", 
+       y = "age 15-60 deaths per 1000 population")
+```
+
+These boxplots show a possible negative correlation between life expectancy and adult mortality rates, as one might expect.
+
+From these boxplots and stacked bar graphs, we have gained a better understanding of the nature of the predictor variables as they relate to the new categorical life epectancy variable.
+
+
+##### Pairs Plots
+
+We would also like to use a pairs plot to investigate correlation between each of the variables (excluding the categorical variable status):
+
+```{r pairs_death_and_disease}
+pairs(life_expectancy ~ hepatitis_b + polio  + diphtheria + hiv_aids +
+        adult_mortality + bmi, data = lifedata)
+```
+
+From this pairs plot of death- and disease-related predictor variables, it is evident that hepatitius b and diphtheria are highly correlated. Additionally, adult_mortality and life_expectancy seem to be highly negatively correlated. These correlations corroborate what we would expect.
+
+```{r pairs_other}
+pairs(life_expectancy ~  alcohol + total_expenditure + gdp +
+        thinness_10_19 + thinness_5_9 + schooling, data = lifedata)
+```
+
+This pairs plot shows that thinness_10_19 and thinness_5_9 are highly correlated. However, they are missing values from the same 34 observations and represent different groups of people in the population so we will include both in the first model.
+
+Schooling seems to be strongly positively correlated with life expectancy as well.
+
+
+### Modeling Process and Explanation of Methods
+
+We expect that the status of a country (Developed vs. Developing) may also have an effect on life expectancy, as developing countries have less resources and are generally less stable than fully developed countries. We will perform an ANOVA test to examine if there is a significant difference in life expectancy between developed and developing countries.  
+
+Then, we will investigate which country characteristics are the best predictors of life expectancy in a given country. First, we will create a new categorical variable to classify life expectancy: 48 years to 60 years will be considered poor, 61 years to 67 years will be considered fair, 68 years to 76 years will be considered good, and 77 years to 90 years will be considered excellent. We will use a multinomial logistic regression model to explore the effects of each country characteristic on the probability that the given country will have a certain category of life expectancy.  
+
+We will begin by utilizing most variables in the dataset, including status, adult mortality, alcohol, hepatitis B, BMI, polio, total expenditure, diphtheria. We suspect that the influence of certain predictors, such as HIV/AIDS, polio, diptheria, and hepatitis B, may differ depending on geographic location (i.e. life expectancy in countries with readily available vaccine supplies may not be as affected by these diseases as life expectancy in countries without readily available vaccines). To address this, when fitting our model, we will test several interaction effects with these disease predictors, including total_expenditure * hiv_aids and hepatitis_b * hiv_aids.
+
+
+We will use ANOVA for preliminary investigation of whether life expectancy differs between country development status. ANOVA allows us to see if a response variable is generally equal across categories or if it differs, and if life expectancy varies over development status, this is a good indicator to study other characteristics of developing and developed countries with high and low life expectancies to see what may be influencing life expectancy.  
+
+To create our model, we will use multinomial regression to display the effects of country characteristics on the odds that a country will have a certain category of life expectancy (poor, fair, good, or excellent). We chose this technique because we wanted to see the effects of multiple variables on a categorical response with several levels -- this could not be accomplished by simple linear regression, multiple linear regression, or logistic regression. We believe that when investigating countries that are in need of global assistance, the exact life expectancy is not required -- rather, simply knowing if the life expectancy is very low/high is sufficient for recognizing a struggling nation. We believe multinomial linear regression will allow us to utilize quantitative characteristics of different countries to predict an important categorical response.  
+
+To create and improve our model, we will use backwards selection based on AIC. We will begin with all possible variables that we are considering as potentially significant to life expectancy category: status, adult mortality, alcohol, hepatitis B, BMI, polio, total expenditure, diphtheria, HIV/AIDS, GDP, thinness 10-19 years, thinness 5-9 years, and schooling. We will continually remove variables and select the model with the lowest AIC. We selected this criterion because the AIC possesses a smaller penalty for unnecessary predictors than the BIC, because we are not concerned with finding the most parsimonious model and instead want to prioritize the predictive ability of the model.
+
+
+### Model Selection Process
+
+We will use a multinomial logistic regression model to explore the effects of each country characteristic on the probability that the given country will have a certain category of life expectancy.
+
+We will remove the NA values in order to fit the model.
+
+```{r na}
+lifedata <- lifedata%>%
+  select(- population)
+
+nadata <- na.omit(lifedata)
+
+nadata%>%
+  skim()
+```
+
+This drops our number of observations from 183 to 144, which is still a decent amount of data with which to fit a model.
+
+We will begin by creating the full model, with all possible variables that we are considering as potentially significant to life expectancy category: status, adult mortality, alcohol, Hepatitis B, BMI, Polio, total expenditure, diphtheria, HIV/AIDS, GDP, thinness 10-19 years, thinness 5-9 years, and schooling.
+
+```{r full-model}
+full_model <- multinom(life_expectancy_cat ~ status + adult_mortality + alcohol + hepatitis_b + bmi + polio + total_expenditure + diphtheria  + schooling + thinness_10_19 + thinness_5_9 + hiv_aids + gdp, data = nadata)
+
+tidy(full_model, exponentiate = FALSE, conf.int = TRUE) %>%
+  kable(digits = 3, format = "markdown")
+```
+
+For this model, excellent is the baseline category of life_expectancy_cat. Developed is the baseline of status.
+
+##### Backwards Selection 
+
+To create and improve our model, we will use backwards selection based on AIC.
+
+```{r backward}
+regfit_backward <- step(full_model, direction = "backward")
+
+sel_summary <- summary(regfit_backward)
+
+final_aic <- data.frame(aic = sel_summary$AIC)
+```
+
+```{r finalaic}
+final_aic
+```
+
+The AIC for the selected model is 141.3746.
+
+The model selected by backward AIC selection is as follows. We have also included an interaction found significant between hiv_aids and hepatitis_b. If the assumptions are met, this will be our final model:
+
+```{r selected}
+selected_model <- multinom(life_expectancy_cat ~ hepatitis_b +
+                             thinness_5_9 +total_expenditure +
+                             hiv_aids + gdp + schooling +
+                             adult_mortality + 
+                             hiv_aids * hepatitis_b , data = nadata)
+
+kable(tidy(selected_model, exponentiate = FALSE, conf.int = TRUE), format = "markdown", digits = 7)
+```
+
+### Discussion of the Assumptions and Diagnostics for the Final Model
+
+##### Augmented Dataset
+
+```{r pred_probs}
+pred_probs <- as_tibble(predict(selected_model, type = "probs")) %>%
+  mutate(obs_num = 1:n())
+
+pred_probs %>%
+  slice(1:5)
+```
+
+```{r residuals}
+residuals <- as.tibble(residuals(selected_model)) %>%
+  setNames(paste('resid.', names(.), sep = "")) %>%
+  mutate(obs_num = 1:n())
+         
+residuals %>% 
+  slice(1:5)
+```
+
+```{r aug}
+nadata <- nadata%>%
+  mutate(obs_num = 1:n())
+
+selected_model_aug <- inner_join(nadata, pred_probs)
+selected_model_aug <- inner_join(selected_model_aug, residuals)
+
+selected_model_aug %>%
+  glimpse()
+```
+
+
+##### Binned Residuals vs. Predicted Probabilities
+
+```{r binned_predicted}
+
+par(mfrow = c(2,2))
+
+arm::binnedplot(x = selected_model_aug$excellent,
+                y = selected_model_aug$resid.excellent,
+                xlab = "Predicted Probability (excellent)",
+                ylab = "Residuals",
+                main = "Excellent: Binned Residual vs. Predicted Probabilities",
+                col.int = FALSE)
+
+arm::binnedplot(x = selected_model_aug$good,
+                y = selected_model_aug$resid.good,
+                xlab = "Predicted Probability (good)",
+                ylab = "Residuals",
+                main = "Good: Binned Residual vs. Predicted Probabilities",
+                col.int = FALSE)
+
+arm::binnedplot(x = selected_model_aug$fair,
+                y = selected_model_aug$resid.fair,
+                xlab = "Predicted Probability (fair)",
+                ylab = "Residuals",
+                main = "Fair: Binned Residual vs. Predicted Probabilities",
+                col.int = FALSE)
+arm::binnedplot(x = selected_model_aug$poor,
+                y = selected_model_aug$resid.poor,
+                xlab = "Predicted Probability (poor)",
+                ylab = "Residuals",
+                main = "Poor: Binned Residual vs. Predicted Probabilities",
+                col.int = FALSE)
+```
+
+These plots show binned residuals versus their predicted probabilities for each level of life_expectancy_cat. All of the plots seem to satisfy multinomial logistic model assumptions because they are not fan-shaped and are scattered both above and below 0 fairly evenly.
+
+**Binned Residuals vs. Predictors**
+
+Now, we will plot the binned model residuals versus each quantitative predictor for each category of life_expectancy_cat (excellent, good, fair, poor).
+
+
+##### hepatitis_b
+
+```{r resid_hepb}
+
+par(mfrow = c(2,2))
+
+selected_model_augn <- na.omit(selected_model_aug)
+
+arm::binnedplot(x=selected_model_augn$hepatitis_b,y=selected_model_augn$'resid.excellent',xlab="Hepatitis B Immunization Rate", main = "Excellent: Binned Residuals vs. hepatitis_b", col.int = FALSE)
+
+arm::binnedplot(x=selected_model_augn$hepatitis_b,y=selected_model_augn$'resid.good',xlab="Hepatitis B Immunization Rate", main = "Good: Binned Residuals vs. hepatitis_b", col.int = FALSE)
+
+arm::binnedplot(x=selected_model_augn$hepatitis_b,y=selected_model_augn$'resid.fair',xlab="Hepatitis B Immunization Rate", main = "Fair: Binned Residuals vs. hepatitis_b", col.int = FALSE)
+
+arm::binnedplot(x=selected_model_augn$hepatitis_b,y=selected_model_augn$'resid.poor',xlab="Hepatitis B Immunization Rate", main = "Poor: Binned Residuals vs. hepatitis_b", col.int = FALSE)
+```
+
+From the plots of binned residuals vs. hepatitis_b for each category of life_expectancy_cat (excellent, good, fair, poor), we can see that the residuals are all approximately scattered around a mean of 0, and there is no apparent nonlinear pattern. These plots do not violate model assumptions.
+
+
+##### thinness_5_9
+
+```{r resid_thin59}
+
+par(mfrow = c(2,2))
+
+arm::binnedplot(x=selected_model_augn$thinness_5_9,y=selected_model_augn$'resid.excellent',xlab="Thinness Rate among 5 to 9 Year Olds", main = "Excellent: Binned Residuals vs. thinness_5_9", col.int = FALSE)
+
+arm::binnedplot(x=selected_model_augn$thinness_5_9,y=selected_model_augn$'resid.good',xlab="Thinness Rate among 5 to 9 Year Olds", main = "Good: Binned Residuals vs. thinness_5_9", col.int = FALSE)
+
+arm::binnedplot(x=selected_model_augn$thinness_5_9,y=selected_model_augn$'resid.fair',xlab="Thinness Rate among 5 to 9 Year Olds", main = "Fair: Binned Residuals vs. thinness_5_9", col.int = FALSE)
+
+arm::binnedplot(x=selected_model_augn$thinness_5_9,y=selected_model_augn$'resid.poor',xlab="Thinness Rate among 5 to 9 Year Olds", main = "Poor: Binned Residuals vs. thinness_5_9", col.int = FALSE)
+
+
+```
+
+From the plots of binned residuals vs. thinness_5_9 for each category of life_expectancy_cat (excellent, good, fair, poor), we can see that the residuals are all approximately scattered around a mean of 0, and there is no apparent nonlinear pattern. These plots do not violate model assumptions.
+
+
+##### gdp
+
+```{r resid_gdp}
+
+par(mfrow = c(2,2))
+
+arm::binnedplot(x=selected_model_augn$gdp,y=selected_model_augn$'resid.excellent',xlab="Gross Domestic Product per Capita (USD)", main = "Excellent: Binned Residuals vs. gdp", col.int = FALSE)
+
+arm::binnedplot(x=selected_model_augn$gdp,y=selected_model_augn$'resid.good',xlab="Gross Domestic Product per Capita (USD)", main = "Good: Binned Residuals vs. gdp", col.int = FALSE)
+
+arm::binnedplot(x=selected_model_augn$gdp,y=selected_model_augn$'resid.fair',xlab="Gross Domestic Product per Capita (USD)", main = "Fair: Binned Residuals vs. gdp", col.int = FALSE)
+
+arm::binnedplot(x=selected_model_augn$gdp,y=selected_model_augn$'resid.poor',xlab="Gross Domestic Product per Capita (USD)", main = "Poor: Binned Residuals vs. gdp", col.int = FALSE)
+
+```
+
+From the plots of binned residuals vs. gdp, the category of excellent may possess a very slight fanned shape, and the category of good appears slightly curved. However, these are not strong deviations from the assumptions; they may be a result of bin size or other factors. These small trends will be noted, but they do not appear significant enough to violate model assumptions. For fair and poor, we can see that the residuals are all approximately scattered around a mean of 0, and there is no apparent nonlinear pattern. These plots do not violate model assumptions.
+
+
+##### diphtheria
+
+```{r resid_diphth}
+
+par(mfrow = c(2,2))
+
+arm::binnedplot(x=selected_model_augn$diphtheria,y=selected_model_augn$'resid.excellent',xlab="Diphtheria Immunization Rate", main = "Excellent: Binned Residuals vs. diptheria", col.int = FALSE)
+
+arm::binnedplot(x=selected_model_augn$diphtheria,y=selected_model_augn$'resid.good',xlab="Diphtheria Immunization Rate", main = "Good: Binned Residuals vs. diptheria", col.int = FALSE)
+
+arm::binnedplot(x=selected_model_augn$diphtheria,y=selected_model_augn$'resid.fair',xlab="Diphtheria Immunization Rate", main = "Fair: Binned Residuals vs. diptheria", col.int = FALSE)
+
+arm::binnedplot(x=selected_model_augn$diphtheria,y=selected_model_augn$'resid.poor',xlab="Diphtheria Immunization Rate", main = "Poor: Binned Residuals vs. diptheria", col.int = FALSE)
+
+```
+
+From the plots of binned residuals vs. diphtheria for each category of life_expectancy_cat (excellent, good, fair, poor), we can see that the residuals are all approximately scattered around a mean of 0, and there is no apparent nonlinear pattern. These plots do not violate model assumptions.
+
+##### total_expenditure
+
+```{r resid_totexpend}
+
+par(mfrow = c(2,2))
+
+arm::binnedplot(x=selected_model_augn$total_expenditure,y=selected_model_augn$'resid.excellent',xlab="% of Total Government Expenditure Used on Health", main = "Excellent: Binned Residuals vs. total_expenditure", col.int = FALSE)
+
+arm::binnedplot(x=selected_model_augn$total_expenditure,y=selected_model_augn$'resid.good',xlab="% of Total Government Expenditure Used on Health", main = "Good: Binned Residuals vs. total_expenditure", col.int = FALSE)
+
+arm::binnedplot(x=selected_model_augn$total_expenditure,y=selected_model_augn$'resid.fair',xlab="% of Total Government Expenditure Used on Health", main = "Fair: Binned Residuals vs. total_expenditure", col.int = FALSE)
+
+arm::binnedplot(x=selected_model_augn$total_expenditure,y=selected_model_augn$'resid.poor',xlab="% of Total Government Expenditure Used on Health", main = "Poor: Binned Residuals vs. total_expenditure", col.int = FALSE)
+
+```
+
+From the plots of binned residuals vs. total_expenditure for each category of life_expectancy_cat (excellent, good, fair, poor), we can see that the residuals are all approximately scattered around a mean of 0, and there is no apparent nonlinear pattern. These plots do not violate model assumptions.
+
+##### schooling
+
+```{r resid_school}
+
+par(mfrow = c(2,2))
+
+arm::binnedplot(x=selected_model_augn$schooling,y=selected_model_augn$'resid.excellent',xlab="Years of Schooling", main = "Excellent: Binned Residuals vs. schooling", col.int = FALSE)
+
+arm::binnedplot(x=selected_model_augn$schooling,y=selected_model_augn$'resid.good',xlab="Years of Schooling", main = "Good: Binned Residuals vs. schooling", col.int = FALSE)
+
+arm::binnedplot(x=selected_model_augn$schooling,y=selected_model_augn$'resid.fair',xlab="Years of Schooling", main = "Fair: Binned Residuals vs. schooling", col.int = FALSE)
+
+arm::binnedplot(x=selected_model_augn$schooling,y=selected_model_augn$'resid.poor',xlab="Years of Schooling", main = "Poor: Binned Residuals vs. schooling", col.int = FALSE)
+
+```
+
+From the plots of binned residuals vs. schooling, categories excellent and good appear slightly curved (possibly cubic for excellent, and possibly quadratic for good). However, these are not strong deviations/curves -- they may be the result of bin size or other factors, so they do not seem significant enough to violate our model assumptions. For fair and poor, we can see that the residuals are all approximately scattered around a mean of 0, and there is no apparent nonlinear pattern. These plots do not violate model assumptions.
+
+##### adult_mortality
+
+```{r resid_admort}
+
+par(mfrow = c(2,2))
+
+arm::binnedplot(x=selected_model_augn$adult_mortality,y=selected_model_augn$'resid.excellent',xlab="Adult Mortality Rate", main = "Excellent: Binned Residuals vs. adult_mortality", col.int = FALSE)
+
+arm::binnedplot(x=selected_model_augn$adult_mortality,y=selected_model_augn$'resid.good',xlab="Adult Mortality Rate", main = "Good: Binned Residuals vs. adult_mortality", col.int = FALSE)
+
+arm::binnedplot(x=selected_model_augn$adult_mortality,y=selected_model_augn$'resid.fair',xlab="Adult Mortality Rate", main = "Fair: Binned Residuals vs. adult_mortality", col.int = FALSE)
+
+arm::binnedplot(x=selected_model_augn$adult_mortality,y=selected_model_augn$'resid.poor',xlab="Adult Mortality Rate", main = "Poor: Binned Residuals vs. adult_mortality", col.int = FALSE)
+
+```
+
+From the plots of binned residuals vs. adult_mortality_rate for each category of life_expectancy_cat (excellent, good, fair, poor), we can see that the residuals are all approximately scattered around a mean of 0, and there is no apparent nonlinear pattern. These plots do not violate model assumptions.
+
+
+##### hiv_aids
+
+```{r resid_hiv}
+
+par(mfrow = c(2,2))
+
+arm::binnedplot(x=selected_model_augn$hiv_aids,y=selected_model_augn$'resid.excellent',xlab="HIV/AIDs Deaths per 1,000 Live Births", main = "Excellent: Binned Residuals vs. hiv_aids", col.int = FALSE)
+
+arm::binnedplot(x=selected_model_augn$hiv_aids,y=selected_model_augn$'resid.good',xlab="HIV/AIDs Deaths per 1,000 Live Births", main = "Good: Binned Residuals vs. hiv_aids", col.int = FALSE)
+
+arm::binnedplot(x=selected_model_augn$hiv_aids,y=selected_model_augn$'resid.fair',xlab="HIV/AIDs Deaths per 1,000 Live Births", main = "Fair: Binned Residuals vs. hiv_aids", col.int = FALSE)
+
+arm::binnedplot(x=selected_model_augn$hiv_aids,y=selected_model_augn$'resid.poor',xlab="HIV/AIDs Deaths per 1,000 Live Births", main = "Poor: Binned Residuals vs. hiv_aids", col.int = FALSE)
+
+```
+
+From the plots of binned residuals vs. hiv_aids for each category of life_expectancy_cat (excellent, good, fair, poor), we can see that the residuals are all approximately scattered around a mean of 0, and there is no apparent nonlinear pattern. These plots do not violate model assumptions.
+
+##### Multicollinearity
+
+To analyze multicollinearity, we will examine a correlation plot between all numeric variables in the model.
+
+```{r}
+nanumeric <- subset(nadata, select= c(hepatitis_b, thinness_5_9, total_expenditure, hiv_aids, gdp, schooling, adult_mortality))
+cor(nanumeric)
+```
+
+From the correlation plot, we see that most correlation coefficients have magnitudes less than 0.3, indicating no strong concerns with highly correlated variables. There is a coefficient of 0.65319822 between adult_mortality and hiv_aids, which is a bit higher than the others -- this can be somewhat expected, as countries with higher rates of HIV and AIDS are likely to have higher adult mortality rates. However, this correlation is not strong, so we will leave the variables in the model.  
+
+Also, schooling has coefficients of -0.49235285 and -0.5818254 with thinness_5_9 and adult_mortality, respectively. As with adult_mortality and hiv_aids, it is not surprising that as adult mortality and malnourishment increase, the amount of schooling citizens can attain decreases. Again, while somewhat notable, these coefficients are not too large, so we will leave the variables in the model. Overall, the correlation coefficients do not indicate any highly correlated variables, so we do not have concerns about multicollinearity.
+
+
+##### Independence
+
+The independence assumption may not be satisfied within our dataset. Neighboring countries are likely to share similar characteristics, including environment, resources, disease prevalence, and more. Therefore, there may be spatial correlation between the observations, i.e., observations in similar regions (Central Africa, East Asia, North America, etc.) may have similar life expectancies. Countries also often share resources through trade and immigration, so citizens and resources of one country are likely to influence those of neighboring countries. We will proceed with our analysis without accounting for country location, but in future research, this should be addressed by creating a variable to account for a country's region.
+
+
+##### Assumptions Conclusion
+
+Because the plots of residuals vs. predicted probabilities and residuals vs. predictors display no nonlinear trends and there are no high correlation coefficients between variables, we have concluded that the model sufficiently meets the necessary assumptions, and it is an appropriate model fit for the dataset.
+
+
+### Model Prediction
+
+##### Actual Vs. Predicted
+
+We will have our model predict a life expectancy category for each observation and compare with the observation's actual category.
+
+
+```{r actual_predicted}
+selected_model_aug <- selected_model_aug %>%
+  mutate(pred_life = predict(selected_model, type = "class"))
+
+selected_model_aug %>%
+  count(life_expectancy_cat, pred_life, .drop = FALSE) %>%
+  pivot_wider(names_from = pred_life, values_from = n)
+```
+
+```{r misclassification}
+(7 + 5 + 1 + 1 + 1) / 
+  (7 + 5 + 1 + 1 + 1 + 32 + 55 + 22 + 20)
+```
+
+The misclassification rate is fairly low for this model, only 10.41667 percent. This indicates that our model is largely effective at successfully determining the life expectancy category (excellent, good, fair, poor) for various countries.
+
+### Interpretations and Notable Findings from Model Results
+
+From our final model coefficients, we discovered some interesting relationships that we wanted to comment on. 
+
+```{r model}
+kable(tidy(selected_model, exponentiate = FALSE, conf.int = TRUE), format = "markdown", digits = 7)
+```
+
+One thing we found interesting was the coefficients for thinness_5_9.
+
+For each additional percent of children ages 5-9 who are considered thin, the odds of the country having a good life expectancy classification are exp(0.1919056) = 1.2116 times the odds of the country having an excellent life expectancy classification. However, for each additional percent of children ages 5-9 who are considered thin, the odds of the country having a fair life expectancy classification are exp(-0.1827812) = 0.8330 times the odds of the country having an excellent life expectancy classification. And, for each additional percent of children ages 5-9 who are considered thin, the odds of the country having a poor life expectancy classification are exp(1.1660378) = 3.2093 times the odds of the country having an excellent life expectancy classification. 
+
+These coefficients show that the prevalence of child thinness has the most effect on life expectancy between the classifications of poor and excellent countries, as we would expect. 
+
+We also wanted to discuss the differences in adult mortality rate between the different classifications of life expectancy. 
+For each additional death age 15-60 per 1000 population, the odds of the country having a good life expectancy classification are exp(0.0220437) = 1.0223 times the odds of the country having an excellent life expectancy classification.
+For each additional death age 15-60 per 1000 population, the odds of the country having a fair life expectancy classification are exp(	0.0010666) = 1.0011 times the odds of the country having an excellent life expectancy classification.
+For each additional death age 15-60 per 1000 population, the odds of the country having a poor life expectancy classification are exp(0.1060784) = 1.1119 times the odds of the country having an excellent life expectancy classification.
+
+Because adult mortality is so similar to life expectancy, an additional death age 15-60 per 1000 population has a very similar effect on the odds of the country having a good, fair, or poor life expectancy as opposed to an excellent one, although it has the largest effect on a poor versus an excellent one.
+
+### Additional Work and Analysis  
+
+#### Possible Interactions 
+
+We are going to examine possible interaction effects between the predictor variables in our final model that we suspect may have significant interactions. In order to test these, we will use drop-in-deviance tests to compare the selected final model from above to new models with an added interaction that we are testing in order to see if the interactions are significant. 
+
+First, we decided to examine the potential interaction effect between schooling and adult mortality, because we suspect these two may have a significant interaction. 
+
+```{r model-w-interactions}
+model_w_int <- multinom(life_expectancy_cat ~ hepatitis_b + thinness_5_9 +gdp + diphtheria + total_expenditure + schooling + adult_mortality + hiv_aids +schooling*adult_mortality, data = nadata)
+```
+
+```{r interactions}
+anova(selected_model, model_w_int, test = "Chisq") %>% 
+  kable(format = "markdown", digits = 3)
+```
+
+Since the p-value from this drop-in-deviance test, 0.208, is larger than 0.05, we can conlcude that there is not a significant interaction effect between schooling and adult mortality. 
+
+Next, we decided to examine the potential interaction between total expenditure and hiv/aids. 
+
+```{r model-w-interactions2}
+model_w_int2 <- multinom(life_expectancy_cat ~ hepatitis_b + thinness_5_9 + gdp + diphtheria + total_expenditure + schooling + adult_mortality + hiv_aids + hiv_aids*total_expenditure,data = nadata)
+```
+
+```{r interactions2}
+anova(selected_model, model_w_int2, test = "Chisq") %>% 
+  kable(format = "markdown", digits = 3)
+```
+
+Since the p-value from this drop-in-deviance test, 0.97, is super large, we can conlcude that there is not a significant interaction effect between hiv/aids and total expenditure. 
+
+Lastly, we decided to examine the potential interaction between hepatitis B and hiv/aids. 
+
+```{r model-w-interactions3}
+model_w_int3 <- multinom(life_expectancy_cat ~ hepatitis_b + thinness_5_9 +
+                             gdp + diphtheria + total_expenditure + 
+                             schooling + adult_mortality + hiv_aids + hiv_aids*hepatitis_b,
+                           data = nadata)
+```
+
+```{r interactions3}
+anova(selected_model, model_w_int3, test = "Chisq") %>% 
+  kable(format = "markdown", digits = 3)
+```
+
+Since the p-value from this drop-in-deviance test, 0.013, is smaller than 0.05, we can conlcude that there is a significant interaction effect between hiv/aids and hepatitis B. 
+
+**ANOVA Between Developed and Developing Countries**
+
+We will perform an ANOVA test to examine whether or not life expectancy differs significantly between developed and developing countries. First, we will check model assumptions for ANOVA.  
+
+##### Normality
+
+```{r develop_normal}
+
+ggplot(data = lifedata, mapping = aes(x = status, y = life_expectancy))+
+  geom_boxplot()+
+  labs(title = "Life Expectancy of Country by Development Status", x="Development Status", y="Life Expectancy (Years)")
+
+```
+
+From the boxplot, it appears that life expectancy is approximately normally distributed in each group. The tails of each boxplot appear roughly even. The medians of the plots seem a bit right-skewed, indicating that there may be a few more data points in the higher range of life expectancies in each group. However, the plots are approximately symmetric, indicating that normality is satisfied.
+
+
+##### Constant Variance
+
+```{r dev_variance}
+
+lifedata %>%
+  group_by(status) %>%
+  summarise(n_color = n(), mean = mean(life_expectancy), var = var(life_expectancy), median = median(life_expectancy))
+
+```
+
+There may be some concerns with constant variance, as the number of observations in each group is are not equal. There are about five times as many developing countries as developed countries. However, the highest variance of 61.51113 is not more than four times the smallest variance  of 17.32113. Although there are very different numbers of observations in each group, the variances do not differ enough to cause concern, so we will proceed with the ANOVA test despite some slight issues with the constant variance assumption.
+
+##### Independence
+
+The independence assumption appears essentially satisfied. Within one group (Developed or Developing), the life expectancy of one country should not affect that of another country. Between groups, the life expectancy of a developing country should not effect that of a developed country. Developed countries may be able to influence nearby developing countries with sharing of wealth or resources, raising life expectancy. Developing countries may influence the life expectancy of nearby developed countries if they export resources used by developed countries, which may raise life expectancy. Relationships between countries are not explained by the dataset, so we will proceed as if independence is satisfied, although a more comprehensive analysis may be suitable for future research.
+
+
+**Analysis of Variance**
+
+```{r dev-anova}
+
+ develop_anova <- aov(life_expectancy ~ status, data = lifedata)
+
+tidy(develop_anova) %>% 
+  kable(format = "markdown", digits = 7)
+
+```
+
+With an F statistic of 66.26961 and a p-value of ~0, we can conclude that the mean life expectancy of developed countries is significantly different from the mean life expectancy of developing countries. We will plot confidence intervals and construct pairwise confidence intervals to investigate this difference.
+
+**Plot Confidence Intervals**
+
+Bonferroni correction: 1 - (0.05/2) = 0.975  
+
+Cumulative confidence level = 1- ((1-0.975)/2) = 0.9875
+
+```{r develop_plot_cf}
+
+n.groups <- lifedata %>% distinct(status) %>% count()
+crit.val <- qt(0.9875, (nrow(lifedata)-n.groups$n))
+sigma <- sqrt(69.64321)
+conf.intervals <- lifedata %>%
+  group_by(status) %>% 
+  summarise(mean_lifeexpect = mean(life_expectancy), n = n(), 
+            lower = mean_lifeexpect - crit.val * sigma/sqrt(n),
+            upper = mean_lifeexpect + crit.val * sigma/sqrt(n))
+ggplot(data=conf.intervals,aes(x=status,y=mean_lifeexpect)) +
+  geom_point() + 
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.1) + 
+  labs(title="99% confidence interval for the mean value of life expectancy (years)",
+       subtitle="by development status", y="Mean Life Expectancy (Years)", x="Development Status") +
+  coord_flip()
+
+```
+
+
+From the plotted confidence intervals, it is apparent that mean life expectancies differ greatly between developed and developing countries. Developed countries have, on average, much higher life expectancies, and developing countries have much lower life expectancies on average. The range of the confidence interval for developed countries is slightly wider than that of the interval for developing countries, but there is no overlap between the intervals. We will also examine a pairwise confidence interval below.
+
+
+**Pairwise Confidence Interval**
+
+```{r develop_pairwise}
+
+pairwiseCI(life_expectancy ~ status, data = lifedata, 
+           method = "Param.diff", conf.level = 0.975, var.equal = TRUE)
+
+```
+
+The 95% pairwise confidence interval for the difference between mean life expectancies in developed and developing countries is (-14.87, -8.405). Since this interval does not include 0, we can conclude that there is a significant difference between mean life expectancies in developed and developing countries.

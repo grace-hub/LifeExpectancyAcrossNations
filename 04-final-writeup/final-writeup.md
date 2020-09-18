@@ -1,6 +1,6 @@
 Life Expectancy Across Nations
 ================
-Dressed to the 9’s
+Abbey List, Carly VanDewark, Hannah Bogomilsky, Rachel Peroni  
 December 5, 2019
 
 ## Section 1: Introduction
